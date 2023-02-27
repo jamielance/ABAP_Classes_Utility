@@ -1,0 +1,65 @@
+CLASS zcl_set_values DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC .
+
+  PUBLIC SECTION.
+    TYPES:
+      BEGIN OF ty_set_value,
+        value TYPE any,
+      END OF ty_set_value,
+      tty_set_value TYPE STANDARD TABLE OF ty_set_value WITH NON-UNIQUE DEFAULT KEY.
+
+    METHODS:
+      get_set_values
+        IMPORTING
+          set_name TYPE rsparams-setname
+        RETURNING
+          VALUE(rt_set_values) TYPE tty_set_value,
+      create_select_option
+        IMPORTING
+          iv_fieldname TYPE string
+          it_set_values TYPE tty_set_value
+        RETURNING
+          VALUE(rs_select_option) TYPE RSPARAMS-SELOPT.
+
+  PRIVATE SECTION.
+ENDCLASS.
+
+CLASS zcl_set_values IMPLEMENTATION.
+  METHOD get_set_values.
+    DATA: ls_set_value TYPE ty_set_value.
+
+    CALL FUNCTION 'RS_SET_GET_LIST'
+      EXPORTING
+        setname = set_name
+      TABLES
+        values  = rt_set_values.
+
+    LOOP AT rt_set_values INTO ls_set_value.
+      " Perform any additional logic on the set values
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD create_select_option.
+    DATA: lt_range_values TYPE RANGE OF ty_set_value,
+          ls_range_value  TYPE ty_set_value.
+
+    " Filter the set values to the data type of the field
+    LOOP AT it_set_values INTO ls_range_value
+      WHERE value TYPEOF iv_fieldname.
+      APPEND ls_range_value TO lt_range_values.
+    ENDLOOP.
+
+    " Sort the range table to perform binary search
+    SORT lt_range_values BY value.
+
+    " Create a select option from the range table
+    CALL FUNCTION 'RANGES_FILL_FROM_ITAB'
+      EXPORTING
+        iv_fieldname = iv_fieldname
+      TABLES
+        it_range     = lt_range_values
+        rs_range     = rs_select_option.
+  ENDMETHOD.
+ENDCLASS.
