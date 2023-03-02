@@ -1,0 +1,61 @@
+CLASS zcl_submit_batch_job DEFINITION.
+  PUBLIC SECTION.
+    METHODS:
+      constructor IMPORTING i_jobname TYPE tbtcjob-jobname,
+      submit_batch_job,
+      check_batch_job_running.
+
+  PRIVATE SECTION.
+    DATA:
+      jobname TYPE tbtcjob-jobname,
+      jobcount TYPE i,
+      message TYPE string.
+ENDCLASS.
+
+CLASS zcl_submit_batch_job IMPLEMENTATION.
+  METHOD constructor.
+    jobname = i_jobname.
+  ENDMETHOD.
+
+  METHOD submit_batch_job.
+    check_batch_job_running( ).
+    IF message IS NOT INITIAL.
+      WRITE message.
+      RETURN.
+    ENDIF.
+
+    DATA:
+      jobcount TYPE i.
+
+    CALL FUNCTION 'BP_JOB_SUBMIT'
+      EXPORTING
+        jobname            = jobname
+        external_user_name = sy-uname
+      IMPORTING
+        jobcount           = jobcount.
+
+    IF sy-subrc <> 0.
+      message = 'Batch job submission failed.'.
+      RETURN.
+    ENDIF.
+
+    message = 'Batch job submitted successfully.'.
+  ENDMETHOD.
+
+  METHOD check_batch_job_running.
+    DATA:
+      lt_jobs TYPE TABLE OF tbtcjob,
+      ls_job  TYPE tbtcjob.
+
+    SELECT *
+      FROM tbtcjob
+      INTO TABLE lt_jobs
+      WHERE jobname = jobname.
+
+    READ TABLE lt_jobs INTO ls_job INDEX 1.
+
+    IF sy-subrc = 0 AND ls_job-jobcount > 0.
+      message = 'Batch job is currently running.'.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
