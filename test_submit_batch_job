@@ -1,0 +1,55 @@
+CLASS ltcl_submit_batch_job_test DEFINITION FOR TESTING.
+  PRIVATE SECTION.
+    DATA:
+      jobname TYPE tbtcjob-jobname,
+      class   TYPE REF TO lcl_submit_batch_job.
+
+  METHODS:
+    setup,
+    teardown,
+    test_submit_batch_job_success,
+    test_submit_batch_job_running,
+    test_submit_batch_job_failure.
+
+ENDCLASS.
+
+CLASS ltcl_submit_batch_job_test IMPLEMENTATION.
+  METHOD setup.
+    jobname = 'YOUR_BATCH_JOB_NAME_HERE'.
+    class = NEW lcl_submit_batch_job( jobname ).
+  ENDMETHOD.
+
+  METHOD teardown.
+    CLEAR class.
+  ENDMETHOD.
+
+  METHOD test_submit_batch_job_success.
+    class->submit_batch_job( ).
+    ASSERT class->message = 'Batch job submitted successfully.'.
+  ENDMETHOD.
+
+  METHOD test_submit_batch_job_running.
+    DATA:
+      lt_jobs TYPE TABLE OF tbtcjob,
+      ls_job  TYPE tbtcjob.
+
+    SELECT *
+      FROM tbtcjob
+      INTO TABLE lt_jobs
+      WHERE jobname = jobname.
+
+    READ TABLE lt_jobs INTO ls_job INDEX 1.
+    ls_job-jobcount = 1.
+    MODIFY tbtcjob FROM ls_job.
+
+    class->submit_batch_job( ).
+    ASSERT class->message = 'Batch job is currently running.'.
+  ENDMETHOD.
+
+  METHOD test_submit_batch_job_failure.
+    jobname = 'INVALID_BATCH_JOB_NAME'.
+    class = NEW lcl_submit_batch_job( jobname ).
+    class->submit_batch_job( ).
+    ASSERT class->message = 'Batch job submission failed.'.
+  ENDMETHOD.
+ENDCLASS.
