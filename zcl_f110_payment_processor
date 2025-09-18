@@ -1,0 +1,299 @@
+CLASS zcl_f110_payment_processor DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    TYPES:
+      BEGIN OF ty_bkpf,
+        bukrs   TYPE bukrs,
+        belnr   TYPE belnr_d,
+        gjahr   TYPE gjahr,
+        belnr2  TYPE belnr_d,
+        gjahr2  TYPE gjahr,
+        inv_cat TYPE char3,
+        xigno   TYPE char1,
+      END OF ty_bkpf,
+      ty_bkpf_tab TYPE STANDARD TABLE OF ty_bkpf WITH DEFAULT KEY,
+      BEGIN OF ty_rbkp,
+        belnr TYPE rbkp-belnr,
+        gjahr TYPE rbkp-gjahr,
+      END OF ty_rbkp,
+      ty_rbkp_tab TYPE STANDARD TABLE OF ty_rbkp WITH DEFAULT KEY,
+      ty_regup_tab TYPE STANDARD TABLE OF regup_1830 WITH DEFAULT KEY.
+
+    METHODS execute
+      IMPORTING
+        i_budat TYPE f110c-budat OPTIONAL
+        i_nedat TYPE f110v-nedat OPTIONAL
+        i_fdebi TYPE f110v-fdebi OPTIONAL
+        i_trace TYPE trcopt OPTIONAL
+      CHANGING
+        c_reguh TYPE reguh_1830
+        ct_regup TYPE ty_regup_tab.
+
+  PRIVATE SECTION.
+    METHODS validate_run_category
+      IMPORTING
+        iv_run_category TYPE char3
+      RETURNING
+        VALUE(rv_is_valid) TYPE abap_bool.
+
+    METHODS load_bkpf_data
+      IMPORTING
+        it_regup TYPE ty_regup_tab
+      RETURNING
+        VALUE(rt_bkpf) TYPE ty_bkpf_tab.
+
+    METHODS load_rbkp_data
+      IMPORTING
+        it_bkpf TYPE ty_bkpf_tab
+        iv_run_category TYPE char3
+      RETURNING
+        VALUE(rt_rbkp) TYPE ty_rbkp_tab.
+
+    METHODS flag_invoices
+      IMPORTING
+        iv_run_category TYPE char3
+        it_rbkp TYPE ty_rbkp_tab
+      CHANGING
+        ct_regup TYPE ty_regup_tab
+        ct_bkpf TYPE ty_bkpf_tab.
+
+    METHODS enforce_volume_cap
+      IMPORTING
+        iv_threshold TYPE i
+      CHANGING
+        ct_regup TYPE ty_regup_tab
+        ct_bkpf TYPE ty_bkpf_tab
+      RETURNING
+        VALUE(rv_cap_applied) TYPE abap_bool.
+
+    METHODS schedule_next_run
+      IMPORTING
+        is_reguh TYPE reguh_1830
+        iv_delay_seconds TYPE i DEFAULT 300.
+ENDCLASS.
+
+CLASS zcl_f110_payment_processor IMPLEMENTATION.
+  METHOD execute.
+    DATA(lv_run_category) = c_reguh-laufi+0(3).
+
+    IF validate_run_category( lv_run_category ) = abap_false.
+      RETURN.
+    ENDIF.
+
+    DATA(lt_bkpf) = load_bkpf_data( ct_regup ).
+    IF lt_bkpf IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    DATA(lt_rbkp) = load_rbkp_data( lt_bkpf, lv_run_category ).
+
+    flag_invoices(
+      EXPORTING
+        iv_run_category = lv_run_category
+        it_rbkp         = lt_rbkp
+      CHANGING
+        ct_regup        = ct_regup
+        ct_bkpf         = lt_bkpf ).
+
+    DELETE lt_bkpf WHERE inv_cat <> lv_run_category.
+    SORT lt_bkpf BY xigno.
+
+    DATA(lv_cap_applied) = enforce_volume_cap(
+      EXPORTING
+        iv_threshold = 10000
+      CHANGING
+        ct_regup     = ct_regup
+        ct_bkpf      = lt_bkpf ).
+
+    IF lv_cap_applied = abap_true.
+      schedule_next_run( c_reguh ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD validate_run_category.
+    SELECT SINGLE invoice_category
+      FROM zfi_inv_category
+      WHERE invoice_category = @iv_run_category
+      INTO @DATA(lv_invoice_category).
+
+    rv_is_valid = COND #( WHEN sy-subrc = 0 THEN abap_true ELSE abap_false ).
+  ENDMETHOD.
+
+  METHOD load_bkpf_data.
+    IF it_regup IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    SELECT bukrs,
+           belnr,
+           gjahr,
+           awkey
+      FROM bkpf
+      FOR ALL ENTRIES IN @it_regup
+      WHERE bukrs = @it_regup-bukrs
+        AND belnr = @it_regup-belnr
+        AND gjahr = @it_regup-gjahr
+      INTO TABLE @rt_bkpf.
+
+    IF sy-subrc = 0.
+      SORT rt_bkpf BY bukrs belnr gjahr.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD load_rbkp_data.
+    IF it_bkpf IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    SELECT belnr,
+           gjahr
+      FROM rbkp
+      FOR ALL ENTRIES IN @it_bkpf
+      WHERE belnr                   = @it_bkpf-belnr2
+        AND gjahr                   = @it_bkpf-gjahr2
+        AND zz1_invoicecategory_mih = @iv_run_category
+      ORDER BY PRIMARY KEY
+      INTO TABLE @rt_rbkp.
+  ENDMETHOD.
+
+  METHOD flag_invoices.
+    DATA lt_rbkp_sorted TYPE ty_rbkp_tab.
+
+    lt_rbkp_sorted = it_rbkp.
+    SORT ct_bkpf BY bukrs belnr gjahr.
+    SORT lt_rbkp_sorted BY belnr gjahr.
+
+    LOOP AT ct_regup ASSIGNING FIELD-SYMBOL(<ls_regup>).
+      READ TABLE ct_bkpf ASSIGNING FIELD-SYMBOL(<ls_bkpf>)
+           WITH KEY bukrs = <ls_regup>-bukrs
+                    belnr = <ls_regup>-belnr
+                    gjahr = <ls_regup>-gjahr
+           BINARY SEARCH.
+      IF sy-subrc <> 0.
+        CONTINUE.
+      ENDIF.
+
+      READ TABLE lt_rbkp_sorted TRANSPORTING NO FIELDS
+           WITH KEY belnr = <ls_bkpf>-belnr2
+                    gjahr = <ls_bkpf>-gjahr2
+           BINARY SEARCH.
+      IF sy-subrc <> 0.
+        <ls_bkpf>-xigno = 'X'.
+        <ls_regup>-xigno = <ls_bkpf>-xigno.
+      ELSE.
+        <ls_bkpf>-inv_cat = iv_run_category.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD enforce_volume_cap.
+    DATA(lv_lines) = lines( ct_bkpf ).
+
+    IF lv_lines < iv_threshold.
+      rv_cap_applied = abap_false.
+      RETURN.
+    ENDIF.
+
+    READ TABLE ct_bkpf ASSIGNING FIELD-SYMBOL(<ls_bkpf_10k>) INDEX iv_threshold.
+    IF sy-subrc <> 0 OR <ls_bkpf_10k>-xigno IS NOT INITIAL.
+      rv_cap_applied = abap_false.
+      RETURN.
+    ENDIF.
+
+    LOOP AT ct_bkpf ASSIGNING FIELD-SYMBOL(<ls_bkpf_cap>) FROM iv_threshold.
+      <ls_bkpf_cap>-xigno = 'X'.
+    ENDLOOP.
+
+    SORT ct_regup BY bukrs belnr gjahr.
+    LOOP AT ct_bkpf ASSIGNING <ls_bkpf_cap> FROM iv_threshold.
+      READ TABLE ct_regup ASSIGNING FIELD-SYMBOL(<ls_regup_cap>)
+           WITH KEY bukrs = <ls_bkpf_cap>-bukrs
+                    belnr = <ls_bkpf_cap>-belnr
+                    gjahr = <ls_bkpf_cap>-gjahr
+           BINARY SEARCH.
+      IF sy-subrc = 0.
+        <ls_regup_cap>-xigno = 'X'.
+      ENDIF.
+    ENDLOOP.
+
+    rv_cap_applied = abap_true.
+  ENDMETHOD.
+
+  METHOD schedule_next_run.
+    DATA(lv_laufi_curr) = is_reguh-laufi.
+
+    DATA lv_prefix     TYPE c LENGTH 5.
+    DATA lv_suffix_c   TYPE c LENGTH 1.
+    DATA lv_suffix_n   TYPE i.
+    DATA lv_laufi_next TYPE laufi.
+
+    lv_prefix   = lv_laufi_curr+0(5).
+    lv_suffix_c = lv_laufi_curr+5(1).
+
+    lv_suffix_n = lv_suffix_c.
+    lv_suffix_n = lv_suffix_n + 1.
+
+    IF lv_suffix_n > 9.
+      lv_laufi_next = lv_prefix && '1'.
+    ELSE.
+      lv_laufi_next = lv_prefix && lv_suffix_n.
+    ENDIF.
+
+    DATA lv_jobname  TYPE tbtcjob-jobname.
+    DATA lv_jobcount TYPE tbtcjob-jobcount.
+
+    lv_jobname = |Z_F110S_{ lv_laufi_next }|.
+
+    CALL FUNCTION 'JOB_OPEN'
+      EXPORTING
+        jobname          = lv_jobname
+      IMPORTING
+        jobcount         = lv_jobcount
+      EXCEPTIONS
+        cant_create_job  = 1
+        invalid_job_data = 2
+        jobname_missing  = 3
+        OTHERS           = 4.
+    IF sy-subrc = 0.
+      SUBMIT sapf110s
+             WITH laufd = is_reguh-laufd
+             WITH laufi = lv_laufi_next
+             VIA JOB lv_jobname NUMBER lv_jobcount
+             AND RETURN.
+
+      DATA lv_ts_now     TYPE timestampl.
+      DATA lv_ts_plus    TYPE timestampl.
+      DATA lv_start_date TYPE d.
+      DATA lv_start_time TYPE t.
+
+      GET TIME STAMP FIELD lv_ts_now.
+      lv_ts_plus = cl_abap_tstmp=>add( tstmp = lv_ts_now
+                                       secs  = iv_delay_seconds ).
+
+      CONVERT TIME STAMP lv_ts_plus TIME ZONE sy-zonlo
+              INTO DATE lv_start_date TIME lv_start_time.
+
+      lv_start_time+4(2) = '00'.
+
+      CALL FUNCTION 'JOB_CLOSE'
+        EXPORTING
+          jobcount             = lv_jobcount
+          jobname              = lv_jobname
+          strtimmed            = space
+          sdlstrtdt            = lv_start_date
+          sdlstrttm            = lv_start_time
+        EXCEPTIONS
+          cant_start_immediate = 1
+          invalid_startdate    = 2
+          jobname_missing      = 3
+          job_close_failed     = 4
+          job_nosteps          = 5
+          job_notex            = 6
+          lock_failed          = 7
+          OTHERS               = 8.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
