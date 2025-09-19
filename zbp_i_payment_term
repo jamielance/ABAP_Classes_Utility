@@ -1,0 +1,155 @@
+CLASS zbp_i_payment_term DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC.
+ENDCLASS.
+
+CLASS zbp_i_payment_term IMPLEMENTATION.
+ENDCLASS.
+
+CLASS lhc_paymentterm DEFINITION
+  INHERITING FROM cl_abap_behavior_handler.
+  PRIVATE SECTION.
+    METHODS validate_country
+      FOR VALIDATE ON SAVE
+      IMPORTING keys FOR zfi_payment_term
+      FAILED failed
+      REPORTED reported.
+    METHODS validate_new_term
+      FOR VALIDATE ON SAVE
+      IMPORTING keys FOR zfi_payment_term
+      FAILED failed
+      REPORTED reported.
+ENDCLASS.
+
+CLASS lhc_paymentterm IMPLEMENTATION.
+  METHOD validate_country.
+    READ ENTITIES OF zfi_payment_term IN LOCAL MODE
+      ENTITY zfi_payment_term
+        FIELDS ( client country )
+        WITH CORRESPONDING #( keys )
+      RESULT DATA(lt_terms).
+
+    IF lt_terms IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    TYPES:
+      BEGIN OF ty_country_key,
+        mandt TYPE mandt,
+        land1 TYPE land1,
+      END OF ty_country_key.
+
+    DATA lt_distinct_terms TYPE SORTED TABLE OF ty_country_key
+      WITH UNIQUE KEY mandt land1.
+
+    LOOP AT lt_terms INTO DATA(ls_term).
+      INSERT VALUE ty_country_key( mandt = ls_term-client
+                                   land1 = ls_term-country )
+        INTO TABLE lt_distinct_terms.
+    ENDLOOP.
+
+    SELECT mandt,
+           land1
+      FROM t005
+      FOR ALL ENTRIES IN @lt_distinct_terms
+      WHERE mandt = @lt_distinct_terms-mandt
+        AND land1 = @lt_distinct_terms-land1
+      INTO TABLE @DATA(lt_countries).
+
+    DATA lt_valid_countries TYPE HASHED TABLE OF ty_country_key
+      WITH UNIQUE KEY mandt land1.
+    lt_valid_countries = CORRESPONDING #( lt_countries ).
+
+    LOOP AT lt_terms INTO ls_term.
+      IF ls_term-country IS INITIAL.
+        APPEND VALUE #( %tky = ls_term-%tky ) TO failed-zfi_payment_term.
+        APPEND VALUE #( %tky        = ls_term-%tky
+                        %msg        = new_message_with_text( severity = if_abap_behv_message=>severity-error
+                                                             text     = 'Country (LAND1) must not be initial.' )
+                        %path       = VALUE #( )
+                        country     = ls_term-country )
+          TO reported-zfi_payment_term.
+        CONTINUE.
+      ENDIF.
+
+      READ TABLE lt_valid_countries
+        WITH TABLE KEY mandt = ls_term-client
+                        land1 = ls_term-country
+        TRANSPORTING NO FIELDS.
+      IF sy-subrc <> 0.
+        APPEND VALUE #( %tky = ls_term-%tky ) TO failed-zfi_payment_term.
+        APPEND VALUE #( %tky        = ls_term-%tky
+                        %msg        = new_message_with_text( severity = if_abap_behv_message=>severity-error
+                                                             text     = |Country { ls_term-country } is not maintained in T005.| )
+                        %path       = VALUE #( )
+                        country     = ls_term-country )
+          TO reported-zfi_payment_term.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD validate_new_term.
+    READ ENTITIES OF zfi_payment_term IN LOCAL MODE
+      ENTITY zfi_payment_term
+        FIELDS ( client new_term )
+        WITH CORRESPONDING #( keys )
+      RESULT DATA(lt_terms).
+
+    IF lt_terms IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    TYPES:
+      BEGIN OF ty_term_key,
+        mandt TYPE mandt,
+        zterm TYPE dzterm,
+      END OF ty_term_key.
+
+    DATA lt_distinct TYPE SORTED TABLE OF ty_term_key
+      WITH UNIQUE KEY mandt zterm.
+
+    LOOP AT lt_terms INTO DATA(ls_term).
+      INSERT VALUE ty_term_key( mandt = ls_term-client
+                                zterm = ls_term-new_term )
+        INTO TABLE lt_distinct.
+    ENDLOOP.
+
+    SELECT mandt,
+           zterm
+      FROM t052
+      FOR ALL ENTRIES IN @lt_distinct
+      WHERE mandt = @lt_distinct-mandt
+        AND zterm = @lt_distinct-zterm
+      INTO TABLE @DATA(lt_new_terms).
+
+    DATA lt_valid TYPE HASHED TABLE OF ty_term_key
+      WITH UNIQUE KEY mandt zterm.
+    lt_valid = CORRESPONDING #( lt_new_terms ).
+
+    LOOP AT lt_terms INTO ls_term.
+      IF ls_term-new_term IS INITIAL.
+        APPEND VALUE #( %tky = ls_term-%tky ) TO failed-zfi_payment_term.
+        APPEND VALUE #( %tky    = ls_term-%tky
+                        %msg    = new_message_with_text( severity = if_abap_behv_message=>severity-error
+                                                         text     = 'New payment term must not be initial.' )
+                        new_term = ls_term-new_term )
+          TO reported-zfi_payment_term.
+        CONTINUE.
+      ENDIF.
+
+      READ TABLE lt_valid
+        WITH TABLE KEY mandt = ls_term-client
+                        zterm = ls_term-new_term
+        TRANSPORTING NO FIELDS.
+      IF sy-subrc <> 0.
+        APPEND VALUE #( %tky = ls_term-%tky ) TO failed-zfi_payment_term.
+        APPEND VALUE #( %tky    = ls_term-%tky
+                        %msg    = new_message_with_text( severity = if_abap_behv_message=>severity-error
+                                                         text     = |Payment term { ls_term-new_term } is not defined in T052.| )
+                        new_term = ls_term-new_term )
+          TO reported-zfi_payment_term.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
